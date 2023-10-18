@@ -20,6 +20,7 @@ class PandaConcreteTarget(ConcreteTarget):
     def __init__(self, panda, *args, **kwargs):
         self.panda = panda
         self.architecture = panda.arch_name
+        self.last_failed_read = None
         super().__init__(*args, **kwargs)
 
 
@@ -27,13 +28,24 @@ class PandaConcreteTarget(ConcreteTarget):
         try:
             l.debug("PandaConcreteTarget read_memory at %x", address)
             res = self.panda.virtual_memory_read(self.panda.get_cpu(), address, nbytes)
+            self.last_failed_read = None
             return res
         except Exception as exn:
-            l.debug("PandaConcreteTarget can't read_memory at address %x exception" \
-                     " %s", address, exn)
+            if self.last_failed_read == address - 0x1000:
+                l.warning("PandaConcreteTarget can't read_memory at address %x - FATAL looping",
+                        address)
+                # We're reading unavilable memory in a loop - bail
+                raise SimConcreteMemoryError("PandaConcreteTarget can't read_memory at" \
+                                            f" address {address:x}") from exn
 
-            raise SimConcreteMemoryError("PandaConcreteTarget can't read_memory at" \
-                                         f" address {address:x}") from exn
+            l.warning("PandaConcreteTarget can't read_memory at address %x - set to 0",
+                    address)
+            self.last_failed_read = address # Store the failure address
+            return b"\x00"*nbytes
+
+            #l.warning("PandaConcreteTarget can't read_memory at address %x", address)
+            #raise SimConcreteMemoryError("PandaConcreteTarget can't read_memory at" \
+            #                             f" address {address:x}") from exn
 
     def write_memory(self,address, value, **kwargs):
         l.debug("PandaConcreteTarget write_memory at %x value %s", address, value)
@@ -94,7 +106,7 @@ class PandaConcreteTarget(ConcreteTarget):
         for mapping in mapping_output:
             if mapping.file == self.panda.ffi.NULL:
                 continue # Unknown name
-            filename = self.panda.ffi.string(mapping.file).decode()
+            filename = self.panda.ffi.string(mapping.file).decode(errors='ignore')
             perms=''
 
             if mapping.flags & VM_READ:
@@ -118,8 +130,10 @@ class PandaConcreteTarget(ConcreteTarget):
                 #Private if neither is set
                 perms += 'p'
 
-            vmmap.append(MemoryMap(mapping.base, mapping.base + mapping.size, mapping.offset,
-                                   filename, perms))
+            m = MemoryMap(mapping.base, mapping.base + mapping.size, mapping.offset,
+                                   filename, perms)
+            l.debug(m)
+            vmmap.append(m)
 
         return vmmap
 
